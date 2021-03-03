@@ -2,6 +2,8 @@ use stable_deref_trait::StableDeref;
 
 use crate::common::HasLen;
 use crate::directory::OwnedBytes;
+use crate::{AsyncIoError, AsyncIoResult};
+use async_trait::async_trait;
 use std::ops::Range;
 use std::sync::{Arc, Weak};
 use std::{io, ops::Deref};
@@ -17,17 +19,33 @@ pub type WeakArcBytes = Weak<dyn Deref<Target = [u8]> + Send + Sync + 'static>;
 /// The underlying behavior is therefore specific to the `Directory` that created it.
 /// Despite its name, a `FileSlice` may or may not directly map to an actual file
 /// on the filesystem.
+#[async_trait]
 pub trait FileHandle: 'static + Send + Sync + HasLen {
     /// Reads a slice of bytes.
     ///
     /// This method may panic if the range requested is invalid.
     fn read_bytes(&self, range: Range<usize>) -> io::Result<OwnedBytes>;
+
+    #[doc(hidden)]
+    fn get_physical_address(&self, _range: Range<usize>) -> Option<String> {
+        None
+    }
+
+    #[doc(hidden)]
+    async fn read_bytes_async(&self, _byte_range: Range<usize>) -> AsyncIoResult<OwnedBytes> {
+        Err(AsyncIoError::AsyncUnsupported)
+    }
 }
 
+#[async_trait::async_trait]
 impl FileHandle for &'static [u8] {
     fn read_bytes(&self, range: Range<usize>) -> io::Result<OwnedBytes> {
         let bytes = &self[range];
         Ok(OwnedBytes::new(bytes))
+    }
+
+    async fn read_bytes_async(&self, byte_range: Range<usize>) -> AsyncIoResult<OwnedBytes> {
+        self.read_bytes(byte_range).map_err(AsyncIoError::from)
     }
 }
 
@@ -37,6 +55,7 @@ impl<T: Deref<Target = [u8]>> HasLen for T {
     }
 }
 
+#[async_trait::async_trait]
 impl<B> From<B> for FileSlice
 where
     B: StableDeref + Deref<Target = [u8]> + 'static + Send + Sync,
@@ -101,6 +120,19 @@ impl FileSlice {
         self.data.read_bytes(self.range.clone())
     }
 
+    #[doc(hidden)]
+    pub async fn read_bytes_async(&self) -> AsyncIoResult<OwnedBytes> {
+        self.data.read_bytes_async(self.range.clone()).await
+    }
+
+    #[doc(hidden)]
+    pub fn get_physical_address(&self, range: Range<usize>) -> Option<String> {
+        let end = self.range.start + range.end;
+        assert!(end <= self.range.end);
+        self.data
+            .get_physical_address(self.range.start + range.start..end)
+    }
+
     /// Reads a specific slice of data.
     ///
     /// This is equivalent to running `file_slice.slice(from, to).read_bytes()`.
@@ -113,6 +145,22 @@ impl FileSlice {
         );
         self.data
             .read_bytes(self.range.start + range.start..self.range.start + range.end)
+    }
+
+    #[doc(hidden)]
+    pub async fn read_bytes_slice_async(
+        &self,
+        byte_range: Range<usize>,
+    ) -> AsyncIoResult<OwnedBytes> {
+        assert!(
+            self.range.start + byte_range.end <= self.range.end,
+            "`to` exceeds the fileslice length"
+        );
+        self.data
+            .read_bytes_async(
+                self.range.start + byte_range.start..self.range.start + byte_range.end,
+            )
+            .await
     }
 
     /// Splits the FileSlice at the given offset and return two file slices.

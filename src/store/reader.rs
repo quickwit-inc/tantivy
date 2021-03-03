@@ -50,8 +50,10 @@ impl StoreReader {
         self.skip_index.checkpoints()
     }
 
-    fn block_checkpoint(&self, doc_id: DocId) -> Option<Checkpoint> {
-        self.skip_index.seek(doc_id)
+    pub fn block_checkpoint(&self, doc_id: DocId) -> crate::Result<Checkpoint> {
+        self.skip_index.seek(doc_id).ok_or_else(|| {
+            crate::TantivyError::InvalidArgument(format!("Failed to lookup Doc #{}.", doc_id))
+        })
     }
 
     pub(crate) fn block_data(&self) -> io::Result<OwnedBytes> {
@@ -91,24 +93,45 @@ impl StoreReader {
     /// It should not be called to score documents
     /// for instance.
     pub fn get(&self, doc_id: DocId) -> crate::Result<Document> {
-        let checkpoint = self.block_checkpoint(doc_id).ok_or_else(|| {
-            crate::TantivyError::InvalidArgument(format!("Failed to lookup Doc #{}.", doc_id))
-        })?;
-        let mut cursor = &self.read_block(&checkpoint)?[..];
-        for _ in checkpoint.doc_range.start..doc_id {
-            let doc_length = VInt::deserialize(&mut cursor)?.val() as usize;
-            cursor = &cursor[doc_length..];
-        }
+        let checkpoint = self.block_checkpoint(doc_id)?;
+        self.get_with_checkpoint(doc_id, &checkpoint)
+    }
 
-        let doc_length = VInt::deserialize(&mut cursor)?.val() as usize;
-        cursor = &cursor[..doc_length];
-        Ok(Document::deserialize(&mut cursor)?)
+    #[doc(hidden)]
+    pub fn get_physical_address(&self, doc_id: DocId) -> crate::Result<Option<String>> {
+        let checkpoint = self.block_checkpoint(doc_id)?;
+        let doc_offset = doc_id - checkpoint.doc_range.start;
+        Ok(self
+            .data
+            .get_physical_address(checkpoint.byte_range)
+            .map(|block_physical_address| format!("{}:{}", block_physical_address, doc_offset)))
+    }
+
+    fn get_with_checkpoint(
+        &self,
+        doc_id: DocId,
+        checkpoint: &Checkpoint,
+    ) -> crate::Result<Document> {
+        let block = &self.read_block(checkpoint)?[..];
+        let offset_in_block = doc_id - checkpoint.doc_range.start;
+        let doc = extract_document(block, offset_in_block)?;
+        Ok(doc)
     }
 
     /// Summarize total space usage of this store reader.
     pub fn space_usage(&self) -> StoreSpaceUsage {
         self.space_usage.clone()
     }
+}
+
+pub fn extract_document(mut block: &[u8], offset_in_block: u32) -> io::Result<Document> {
+    for _ in 0..offset_in_block {
+        let doc_length = VInt::deserialize(&mut block)?.val() as usize;
+        block = &block[doc_length..];
+    }
+    let doc_length = VInt::deserialize(&mut block)?.val() as usize;
+    block = &block[..doc_length];
+    Document::deserialize(&mut block)
 }
 
 fn split_file(data: FileSlice) -> io::Result<(FileSlice, FileSlice)> {

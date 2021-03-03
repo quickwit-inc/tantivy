@@ -193,21 +193,20 @@ mod tests {
     use crate::directory::OwnedBytes;
     use crate::postings::TermInfo;
 
-    fn make_term_info(i: u64) -> TermInfo {
+    fn make_term_info(i: usize) -> TermInfo {
         TermInfo {
             doc_freq: 1000u32 + i as u32,
-            positions_idx: i * 500,
-            postings_start_offset: (i + 10) * (i * 10),
-            postings_stop_offset: ((i + 1) + 10) * ((i + 1) * 10),
+            postings_range: (i + 10) * (i * 10)..((i + 1) + 10) * ((i + 1) * 10),
+            positions_idx: (i as u64) * 500u64,
         }
     }
 
     fn create_test_term_dictionary() -> crate::Result<TermDictionary> {
         let mut term_dict_builder = super::super::TermDictionaryBuilder::create(Vec::new())?;
-        term_dict_builder.insert(b"abaisance", &make_term_info(0u64))?;
-        term_dict_builder.insert(b"abalation", &make_term_info(1u64))?;
-        term_dict_builder.insert(b"abalienate", &make_term_info(2u64))?;
-        term_dict_builder.insert(b"abandon", &make_term_info(3u64))?;
+        term_dict_builder.insert(b"abaisance", &make_term_info(0))?;
+        term_dict_builder.insert(b"abalation", &make_term_info(1))?;
+        term_dict_builder.insert(b"abalienate", &make_term_info(2))?;
+        term_dict_builder.insert(b"abandon", &make_term_info(3))?;
         let buffer = term_dict_builder.finish()?;
         let owned_bytes = OwnedBytes::new(buffer);
         TermDictionary::from_bytes(owned_bytes)

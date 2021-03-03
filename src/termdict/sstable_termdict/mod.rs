@@ -6,6 +6,7 @@ mod termdict;
 
 use self::sstable::value::{ValueReader, ValueWriter};
 use self::sstable::{BlockReader, SSTable};
+use std::iter::ExactSizeIterator;
 
 use crate::common::VInt;
 use crate::postings::TermInfo;
@@ -36,22 +37,21 @@ impl ValueReader for TermInfoReader {
     fn read(&mut self, reader: &mut BlockReader) -> io::Result<()> {
         self.term_infos.clear();
         let num_els = VInt::deserialize_u64(reader)?;
-        let mut start_offset = VInt::deserialize_u64(reader)?;
+        let mut start_offset = VInt::deserialize_u64(reader)? as usize;
         let mut positions_idx = 0;
         for _ in 0..num_els {
             let doc_freq = VInt::deserialize_u64(reader)? as u32;
             let posting_num_bytes = VInt::deserialize_u64(reader)?;
-            let stop_offset = start_offset + posting_num_bytes;
+            let end_offset = start_offset + posting_num_bytes as usize;
             let delta_positions_idx = VInt::deserialize_u64(reader)?;
             positions_idx += delta_positions_idx;
             let term_info = TermInfo {
                 doc_freq,
-                postings_start_offset: start_offset,
-                postings_stop_offset: stop_offset,
+                postings_range: start_offset..end_offset,
                 positions_idx,
             };
             self.term_infos.push(term_info);
-            start_offset = stop_offset;
+            start_offset = end_offset;
         }
         Ok(())
     }
@@ -75,11 +75,10 @@ impl ValueWriter for TermInfoWriter {
             return;
         }
         let mut prev_position_idx = 0u64;
-        VInt(self.term_infos[0].postings_start_offset).serialize_into_vec(buffer);
+        VInt(self.term_infos[0].postings_range.start as u64).serialize_into_vec(buffer);
         for term_info in &self.term_infos {
             VInt(term_info.doc_freq as u64).serialize_into_vec(buffer);
-            VInt(term_info.postings_stop_offset - term_info.postings_start_offset)
-                .serialize_into_vec(buffer);
+            VInt(term_info.postings_range.len() as u64).serialize_into_vec(buffer);
             VInt(term_info.positions_idx - prev_position_idx).serialize_into_vec(buffer);
             prev_position_idx = term_info.positions_idx;
         }
@@ -103,20 +102,17 @@ mod tests {
         let mut term_info_writer = super::TermInfoWriter::default();
         term_info_writer.write(&TermInfo {
             doc_freq: 120u32,
-            postings_start_offset: 17u64,
-            postings_stop_offset: 45u64,
+            postings_range: 17..45,
             positions_idx: 10u64,
         });
         term_info_writer.write(&TermInfo {
             doc_freq: 10u32,
-            postings_start_offset: 45u64,
-            postings_stop_offset: 450u64,
+            postings_range: 45..450,
             positions_idx: 104u64,
         });
         term_info_writer.write(&TermInfo {
             doc_freq: 17u32,
-            postings_start_offset: 450u64,
-            postings_stop_offset: 462u64,
+            postings_range: 450..462,
             positions_idx: 210u64,
         });
         let mut buffer = Vec::new();
@@ -128,8 +124,7 @@ mod tests {
             term_info_reader.value(0),
             &TermInfo {
                 doc_freq: 120u32,
-                postings_start_offset: 17u64,
-                postings_stop_offset: 45u64,
+                postings_range: 17..45,
                 positions_idx: 10u64
             }
         );

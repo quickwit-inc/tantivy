@@ -99,6 +99,14 @@ impl TermWeight {
         }
     }
 
+    #[doc(hidden)]
+    pub async fn warm_scorer(&self, reader: &SegmentReader) -> crate::Result<()> {
+        let field = self.term.field();
+        let inverted_index = reader.inverted_index(field)?;
+        inverted_index.warm_postings(&self.term).await?;
+        Ok(())
+    }
+
     pub(crate) fn specialized_scorer(
         &self,
         reader: &SegmentReader,
